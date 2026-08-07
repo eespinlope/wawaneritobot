@@ -34,7 +34,7 @@ def obtener_hoja_sheets():
     try:
         creds_raw = os.environ.get("GOOGLE_CREDENTIALS")
         if not creds_raw:
-            print("Error: No se encontró la variable GOOGLE_CREDENTIALS")
+            print("Error: No se encontró GOOGLE_CREDENTIALS")
             return None
         
         creds_dict = json.loads(creds_raw)
@@ -45,7 +45,6 @@ def obtener_hoja_sheets():
         credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(credentials)
         
-        # Debe coincidir exactamente con el nombre de tu hoja en Google Drive
         sheet = gc.open("Control de Gastos").sheet1
         return sheet
     except Exception as e:
@@ -53,49 +52,76 @@ def obtener_hoja_sheets():
         return None
 
 # -------------------------------------------------------------
-# SUBAGENTE DE FINANZAS (CONECTOR GOOGLE SHEETS)
+# SUBAGENTE DE FINANZAS (BIDIRECCIONAL)
 # -------------------------------------------------------------
 def subagente_finanzas(peticion):
-    prompt_finanzas = f"""
-    Extrae la información financiera del siguiente texto.
-    Texto: "{peticion}"
+    sheet = obtener_hoja_sheets()
+    if not sheet:
+        return "⚠️ No se pudo conectar con Google Sheets. Verifica los permisos o credenciales."
 
-    Responde ÚNICAMENTE con un JSON válido que tenga este formato exacto:
-    {{
-        "monto": 0.00,
-        "categoria": "Comida / Transporte / Servicios / Entretenimiento / Otros",
-        "descripcion": "descripción corta del gasto"
-    }}
-    Sin bloques de código markdown extra como ```json, solo el objeto JSON plano.
-    """
+    # Prompt para calificar la intención
+    prompt_intencion = f"""
+    Determina si la petición del usuario es para REGISTRAR un nuevo gasto o para CONSULTAR información guardada.
+    Petición: "{peticion}"
+
+    Responde ÚNICAMENTE con un JSON plano sin bloques markdown:
+    Si es REGISTRO:
+    {{"accion": "registrar", "monto": 0.00, "categoria": "Categoría", "descripcion": "detalle"}}
     
+    Si es CONSULTA (preguntas por último gasto, total gastado, resumen, etc.):
+    {{"accion": "consultar"}}
+    """
+
     try:
         response = client.models.generate_content(
             model='gemini-flash-latest',
-            contents=prompt_finanzas,
+            contents=prompt_intencion,
         )
-        
-        # Limpiar posible formato markdown en la respuesta
         texto_limpio = response.text.replace("```json", "").replace("```", "").strip()
-        datos_gasto = json.loads(texto_limpio)
-        
-        monto = datos_gasto.get("monto", 0.0)
-        categoria = datos_gasto.get("categoria", "Otros")
-        descripcion = datos_gasto.get("descripcion", peticion)
-        fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        sheet = obtener_hoja_sheets()
-        if sheet:
+        datos = json.loads(texto_limpio)
+
+        # DIRECCIÓN 1: LECTURA (Consultar la hoja de Google Sheets)
+        if datos.get("accion") == "consultar":
+            registros = sheet.get_all_values()
+            
+            # Si solo están los encabezados o la hoja está vacía
+            if len(registros) <= 1:
+                return "ℹ️ Aún no tienes ningún gasto registrado en tu hoja de cálculo."
+            
+            headers = registros[0]
+            filas_datos = registros[1:]
+
+            # Le pasamos todo el contexto de la hoja a Gemini para que responda la pregunta exacta
+            prompt_respuesta = f"""
+            Eres un asistente financiero. El usuario te hace la siguiente consulta: "{peticion}"
+
+            Aquí están los datos de sus gastos guardados en la hoja de cálculo (Encabezados: {headers}):
+            {filas_datos}
+
+            Responde de forma clara, directa y formal usando formato Markdown para resaltar datos clave.
+            """
+            
+            resp_gemini = client.models.generate_content(
+                model='gemini-flash-latest',
+                contents=prompt_respuesta,
+            )
+            return resp_gemini.text
+
+        # DIRECCIÓN 2: ESCRITURA (Guardar en Google Sheets)
+        else:
+            monto = datos.get("monto", 0.0)
+            categoria = datos.get("categoria", "Otros")
+            descripcion = datos.get("descripcion", peticion)
+            fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             sheet.append_row([fecha_actual, monto, categoria, descripcion])
             return f"✅ **Gasto guardado en Google Sheets**\n📅 Fecha: {fecha_actual}\n💰 Monto: ${monto}\n🏷️ Categoría: {categoria}\n📝 Descripción: {descripcion}"
-        else:
-            return "⚠️ El gasto se procesó, pero no se pudo conectar con Google Sheets. Revisa la variable GOOGLE_CREDENTIALS en Render."
-            
+
     except Exception as e:
-        return f"❌ Error al procesar el gasto: {e}"
+        return f"❌ Ocurrió un inconveniente al procesar la solicitud: {e}"
 
 # -------------------------------------------------------------
-# SUBAGENTES RESTANTES
+# SUBAGENTES SECUNDARIOS
 # -------------------------------------------------------------
 def subagente_agenda(peticion):
     return f"📅 [Subagente Agenda]: Tarea recibida -> '{peticion}'"
@@ -109,7 +135,7 @@ def subagente_publicador(peticion):
 def orquestador_router(mensaje_usuario):
     prompt_router = f"""
     Clasifica el siguiente mensaje en una de estas palabras exactas:
-    - FINANZAS (si habla de dinero, gastos, compras, pagos, consumo)
+    - FINANZAS (si habla de dinero, gastos, compras, pagos, histórico de gastos, consultas de dinero)
     - AGENDA (si habla de tareas, recordatorios, fechas, citas)
     - PUBLICAR (si habla de redacción, posts, redes sociales)
     - GENERAL (para conversación casual o preguntas generales)
@@ -142,7 +168,7 @@ def orquestador_router(mensaje_usuario):
 # MANEJADORES DE TELEGRAM
 # -------------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 ¡Hola! Envíame un gasto (ej: 'Gasté $12 en supermercado') y lo registraré automáticamente en Google Sheets.")
+    await update.message.reply_text("👋 ¡Hola! Puedo registrar tus gastos o responder consultas sobre tu historial en Google Sheets.")
 
 async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto_usuario = update.message.text
