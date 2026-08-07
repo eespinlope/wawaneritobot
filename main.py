@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import io
 from datetime import datetime
 from threading import Thread
 from flask import Flask
@@ -69,6 +70,11 @@ def subagente_finanzas(peticion):
     prompt = f"""
     Hoy es {fecha_hoy}. Usuario dice: "{peticion}"
     DB Finanzas (ID, Fecha, Tipo, Monto, Categoria, Desc, F.Compromiso, F.Pago, Estado): {filas_contexto}
+
+    REGLAS DE INTERPRETACIÓN:
+    - Si el usuario dice "le presté a [Nombre]" o "prestamo a [Nombre]", la descripción DEBE ser "Préstamo a [Nombre]".
+    - Si el usuario dice "me prestaron" o "prestamo de [Nombre]", la descripción DEBE ser "Préstamo de [Nombre]".
+    - Ignora errores tipográficos (ej. "Tegistra" = "Registra").
 
     Responde ÚNICAMENTE en JSON plano:
     {{
@@ -141,7 +147,7 @@ def subagente_finanzas(peticion):
                 f_reg = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 sheet.append_row([tx_id, f_reg, tipo, monto, cat, desc, f_comp, f_pago, estado])
-                respuestas.append(f"✅ **{tipo} (`{tx_id}`):** ${monto} | {desc} | Estado: {estado}")
+                respuestas.append(f"✅ **{tipo} (`{tx_id}`):** S/ {monto} | {desc} | Estado: {estado}")
 
         return "\n".join(respuestas) if respuestas else "👍 Operación financiera procesada."
     except Exception as e:
@@ -250,9 +256,43 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     respuesta = router_orquestador(update.message.text)
     await update.message.reply_text(respuesta, parse_mode="Markdown")
 
+async def procesar_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msj_espera = await update.message.reply_text("🎙️ *Procesando nota de voz...*", parse_mode="Markdown")
+    try:
+        file_id = update.message.voice.file_id
+        nuevo_archivo = await context.bot.get_file(file_id)
+        
+        # Guardar archivo en memoria RAM usando BytesIO
+        audio_bytes = io.BytesIO()
+        await nuevo_archivo.download_to_memory(out=audio_bytes)
+        audio_bytes.seek(0)
+        audio_bytes.name = "audio.ogg"
+
+        # Transcripción directa usando Whisper en Groq
+        transcripcion = client_groq.audio.transcriptions.create(
+            file=(audio_bytes.name, audio_bytes.read()),
+            model="whisper-large-v3-turbo",
+            prompt="Transcripción de nota de voz sobre finanzas, notas personales, gastos o préstamos en soles (S/).",
+            response_format="text",
+            language="es"
+        )
+
+        texto_transcrito = str(transcripcion).strip()
+
+        # Envío del texto transcrito al router orquestador
+        respuesta = router_orquestador(texto_transcrito)
+        
+        await msj_espera.edit_text(
+            f"🗣️ *Escuché:* \"_{texto_transcrito}_\"\n\n{respuesta}", 
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await msj_espera.edit_text(f"❌ Error al procesar el audio: {e}")
+
 if __name__ == '__main__':
     Thread(target=run_flask, daemon=True).start()
     bot_app = Application.builder().token(os.environ.get("TELEGRAM_TOKEN")).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
+    bot_app.add_handler(MessageHandler(filters.VOICE, procesar_audio))
     bot_app.run_polling()
