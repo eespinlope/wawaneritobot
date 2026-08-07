@@ -213,9 +213,12 @@ def subagente_notas(peticion):
 def router_orquestador(peticion):
     prompt_router = f"""
     Clasifica el mensaje del usuario en UNA de las siguientes tres categorías:
+
+    REGLA STRICTA: Si el mensaje contiene palabras como "prestar", "presté", "gasté", "pagué", "compré", "debo", "soles", "$" o cualquier monto numérico asociado a una transacción, DEBES clasificarlo obligatoriamente como FINANZAS, ignorando saludos iniciales como "Hola" o "NeroBot".
+
     - FINANZAS: Si habla de dinero, deudas, préstamos, compras, gastos, ingresos, precios, pagos o cuentas.
     - NOTAS: Si solicita guardar ideas, listas de pendientes, contraseñas, apuntes o textos que no involucran dinero.
-    - GENERAL: Saludos, preguntas generales o conversación casual.
+    - GENERAL: ÚNICAMENTE para saludos simples ("hola", "buenos días") o conversación casual sin datos para registrar.
 
     Mensaje del usuario: "{peticion}"
 
