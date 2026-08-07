@@ -52,7 +52,7 @@ def orquestador_router(mensaje_usuario):
     """
     
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-flash-latest',
         contents=prompt_router,
     )
     
@@ -66,7 +66,7 @@ def orquestador_router(mensaje_usuario):
         return subagente_publicador(mensaje_usuario)
     else:
         resp_general = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-flash-latest',
             contents=mensaje_usuario,
         )
         return resp_general.text
