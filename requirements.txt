@@ -1,5 +1,6 @@
-flask
 python-telegram-bot
+groq
 gspread
 google-auth
-groq
+flask
+requests
